@@ -145,7 +145,9 @@
 												'm'
 											),
 										})
-									: $t('config.loadpoint.solarBehaviorCustomHelp')
+									: chargerSupports1p3p
+										? $t('config.loadpoint.solarBehaviorCustomHelpPhases')
+										: $t('config.loadpoint.solarBehaviorCustomHelp')
 							"
 						>
 							<SelectGroup
@@ -291,6 +293,64 @@
 													)
 												: $t("config.loadpoint.thresholdDisableHelpInvalid")
 									}}
+								</div>
+							</div>
+
+							<div v-if="chargerSupports1p3p" class="mt-4">
+								<div class="mb-4">
+									<FormRow
+										id="loadpointPhaseHysteresis"
+										:label="$t('config.loadpoint.phaseHysteresisLabel')"
+										class="mb-0"
+									>
+										<PropertyField
+											id="loadpointPhaseHysteresis"
+											v-model="values.phaseSwitching.hysteresis"
+											type="Float"
+											unit="W"
+											size="w-25 w-min-200"
+											required
+										/>
+									</FormRow>
+									<div class="form-text evcc-gray">
+										{{ phaseHysteresisHelp }}
+									</div>
+								</div>
+
+								<div class="d-flex flex-wrap flex-sm-nowrap gap-4">
+									<FormRow
+										id="loadpointScale3pDelay"
+										:label="$t('config.loadpoint.phaseScale3pDelayLabel')"
+										class="mb-0"
+									>
+										<PropertyField
+											id="loadpointScale3pDelay"
+											v-model="values.phaseSwitching.scale3pDelay"
+											type="Duration"
+											legacy-duration
+											unit="minute"
+											size="w-25 w-min-200"
+											required
+										/>
+									</FormRow>
+									<FormRow
+										id="loadpointScale1pDelay"
+										:label="$t('config.loadpoint.phaseScale1pDelayLabel')"
+										class="mb-0"
+									>
+										<PropertyField
+											id="loadpointScale1pDelay"
+											v-model="values.phaseSwitching.scale1pDelay"
+											type="Duration"
+											legacy-duration
+											unit="minute"
+											size="w-25 w-min-200"
+											required
+										/>
+									</FormRow>
+								</div>
+								<div class="form-text evcc-gray">
+									{{ phaseDelayHelp }}
 								</div>
 							</div>
 
@@ -670,6 +730,7 @@ const defaultValues = {
 		enable: { delay: 1 * nsPerMin, threshold: 0 },
 		disable: { delay: 3 * nsPerMin, threshold: 0 },
 	},
+	phaseSwitching: { hysteresis: 0, scale3pDelay: 0, scale1pDelay: 0 },
 	soc: {
 		poll: { mode: "charging", interval: 60 * nsPerMin },
 		estimate: true,
@@ -688,6 +749,9 @@ const defaultThresholds = {
 	enable: { delay: 1 * nsPerMin, threshold: 0 },
 	disable: { delay: 3 * nsPerMin, threshold: 0 },
 };
+
+// zero values fall back to no extra hysteresis and the solar enable/disable delays
+const defaultPhaseSwitching = { hysteresis: 0, scale3pDelay: 0, scale1pDelay: 0 };
 
 export default {
 	name: "LoadpointModal",
@@ -735,6 +799,31 @@ export default {
 		thresholdsSet(): boolean {
 			const { enable, disable } = this.values.thresholds;
 			return enable.threshold !== 0 || disable.threshold !== 0;
+		},
+		phaseHysteresisHelp(): string {
+			const { minCurrent, maxCurrent, phaseSwitching } = this.values;
+			const { hysteresis } = phaseSwitching;
+			if (hysteresis < 0) {
+				return this.$t("config.loadpoint.phaseHysteresisHelpInvalid");
+			}
+			// scale down below min power on the vehicle's phases, scale up also requires exceeding 1p max
+			const switchPoints = (phases: number) => {
+				const down = 230 * phases * (minCurrent || 0);
+				const up = Math.max(down + hysteresis, 230 * (maxCurrent || 0));
+				return [this.fmtW(up, POWER_UNIT.AUTO), this.fmtW(down, POWER_UNIT.AUTO)];
+			};
+			const [up3p, down3p] = switchPoints(3);
+			const [up2p, down2p] = switchPoints(2);
+			return this.$t("config.loadpoint.phaseHysteresisHelp", { up3p, down3p, up2p, down2p });
+		},
+		phaseDelayHelp(): string {
+			const { phaseSwitching, thresholds } = this.values;
+			const delay3p = phaseSwitching.scale3pDelay || thresholds.enable.delay;
+			const delay1p = phaseSwitching.scale1pDelay || thresholds.disable.delay;
+			return this.$t("config.loadpoint.phaseDelayHelp", {
+				delay3p: this.fmtDurationNs(delay3p, true, "m"),
+				delay1p: this.fmtDurationNs(delay1p, true, "m"),
+			});
 		},
 		dirty(): boolean {
 			return JSON.stringify(this.values) !== this.baseline;
@@ -913,6 +1002,7 @@ export default {
 		solarMode(value) {
 			if (value === "default") {
 				this.values.thresholds = deepClone(defaultThresholds);
+				this.values.phaseSwitching = deepClone(defaultPhaseSwitching);
 			}
 		},
 		chargerSupports1p3p() {
@@ -1061,8 +1151,11 @@ export default {
 			}
 		},
 		updateSolarMode() {
-			const { thresholds } = this.values;
-			if (deepEqual(thresholds, defaultThresholds)) {
+			const { thresholds, phaseSwitching } = this.values;
+			if (
+				deepEqual(thresholds, defaultThresholds) &&
+				deepEqual(phaseSwitching, defaultPhaseSwitching)
+			) {
 				this.solarMode = "default";
 			} else {
 				this.solarMode = "custom";

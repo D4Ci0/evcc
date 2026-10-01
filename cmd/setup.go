@@ -1493,6 +1493,33 @@ func newLoadpoint(idx int, name string, other map[string]any, settingsFn func(*u
 	return lp, nil
 }
 
+// convertPhaseSwitching converts phase switching settings of the former threshold format.
+// Thresholds have no equivalent in the hysteresis and are dropped.
+func convertPhaseSwitching(conf *config.Config) {
+	other := conf.Named().Other
+	prev, ok := other[keys.PhaseSwitching].(map[string]any)
+	if !ok || (prev["scale3p"] == nil && prev["scale1p"] == nil) {
+		return
+	}
+
+	delay := func(key string) any {
+		if m, ok := prev[key].(map[string]any); ok {
+			return m["delay"]
+		}
+		return 0
+	}
+
+	other[keys.PhaseSwitching] = map[string]any{
+		"hysteresis":   0,
+		"scale3pDelay": delay("scale3p"),
+		"scale1pDelay": delay("scale1p"),
+	}
+
+	if err := conf.Update(other); err != nil {
+		log.ERROR.Printf("convert phase switching: %v", err)
+	}
+}
+
 func configureLoadpoints(conf globalconfig.All) error {
 	for id, cc := range conf.Loadpoints {
 		idx := id + 1
@@ -1517,6 +1544,7 @@ func configureLoadpoints(conf globalconfig.All) error {
 	}
 
 	for _, conf := range configurable {
+		convertPhaseSwitching(&conf)
 		cc := conf.Named()
 		idx := len(config.Loadpoints().Devices()) + 1
 

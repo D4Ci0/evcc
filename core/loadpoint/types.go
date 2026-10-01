@@ -10,6 +10,14 @@ type ThresholdsConfig struct {
 	Disable ThresholdConfig `json:"disable"`
 }
 
+// PhaseSwitchingConfig defines automatic 1p/3p switching parameters, zero values fall back to defaults.
+// Hysteresis is the minimum gap in W of available power between scaling up and scaling down.
+type PhaseSwitchingConfig struct {
+	Hysteresis   float64       `json:"hysteresis"`
+	Scale3pDelay time.Duration `json:"scale3pDelay"`
+	Scale1pDelay time.Duration `json:"scale1pDelay"`
+}
+
 // ThresholdConfig defines enable/disable hysteresis parameters
 type ThresholdConfig struct {
 	Delay     time.Duration `json:"delay"`
