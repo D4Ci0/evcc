@@ -104,6 +104,7 @@ type Loadpoint struct {
 
 	Soc             loadpoint.SocConfig
 	Enable, Disable loadpoint.ThresholdConfig
+	phaseSwitching  loadpoint.PhaseSwitchingConfig
 	Ui              loadpoint.UIConfig // display-only, not used in control logic
 
 	// from yaml
@@ -429,6 +430,11 @@ func (lp *Loadpoint) restoreSettings() {
 	var thresholds loadpoint.ThresholdsConfig
 	if err := lp.settings.Json(keys.Thresholds, &thresholds); err == nil {
 		lp.setThresholds(thresholds)
+	}
+
+	var phaseSwitching loadpoint.PhaseSwitchingConfig
+	if err := lp.settings.Json(keys.PhaseSwitching, &phaseSwitching); err == nil {
+		lp.setPhaseSwitching(phaseSwitching)
 	}
 
 	var socConfig loadpoint.SocConfig
@@ -1553,7 +1559,7 @@ func (lp *Loadpoint) fastChargingPhases() (bool, error) {
 	// a fixed phase configuration is not subject to load management, hence no buffer.
 	if targetPhases == 3 && phases == 1 &&
 		(lp.phasesConfigured == 3 || lp.circuitAllowsPhases(3, phaseScaleUpBuffer*lp.effectiveMinCurrent())) {
-		if !lp.phaseTimerElapsed(lp.GetEnableDelay(), phaseScale3p) {
+		if !lp.phaseTimerElapsed(lp.phaseScale3pDelay(), phaseScale3p) {
 			return true, nil
 		}
 
@@ -1623,7 +1629,13 @@ func (lp *Loadpoint) pvScalePhases(sitePower, minCurrent, maxCurrent float64, ma
 	// scale down phases. The phase timer keeps running while 3p min is not covered,
 	// whether 1p would be sustainable or not, so passing clouds cannot restart it (#34746)
 	if scalable {
-		if lp.phaseTimerElapsed(lp.GetDisableDelay(), phaseScale1p) {
+		// a pending disable must not wait for a longer custom scale down delay
+		delay := lp.phaseScale1pDelay()
+		if disable {
+			delay = lp.GetDisableDelay()
+		}
+
+		if lp.phaseTimerElapsed(delay, phaseScale1p) {
 			if disable {
 				lp.elapsePVTimer()
 				return 0
@@ -1657,10 +1669,10 @@ func (lp *Loadpoint) pvScalePhases(sitePower, minCurrent, maxCurrent float64, ma
 		maxCurrent >= minCurrent && lp.circuitAllowsPhases(maxPhases, minCurrent)
 
 	// scale up phases
-	if targetCurrent := grid.PowerToCurrent(availablePower, maxPhases); targetCurrent >= minCurrent && scalable {
-		lp.log.DEBUG.Printf("available power %.0fW > %.0fW min %dp threshold", availablePower, grid.CurrentToPower(minCurrent, maxPhases), maxPhases)
+	if threshold := lp.phaseScale3pThreshold(minCurrent, maxPhases); availablePower >= threshold && scalable {
+		lp.log.DEBUG.Printf("available power %.0fW >= %.0fW %dp threshold", availablePower, threshold, maxPhases)
 
-		if lp.phaseTimerElapsed(lp.GetEnableDelay(), phaseScale3p) {
+		if lp.phaseTimerElapsed(lp.phaseScale3pDelay(), phaseScale3p) {
 			if err := lp.scalePhases(3); err != nil {
 				// a charger may report it cannot switch phases right now
 				// (api.ErrNotAvailable); assume a failed switch and stay silent
@@ -1682,6 +1694,29 @@ func (lp *Loadpoint) pvScalePhases(sitePower, minCurrent, maxCurrent float64, ma
 	}
 
 	return 0
+}
+
+// phaseScale3pThreshold returns the available power required for scaling up to maxPhases.
+// Min power on maxPhases is also the scale down point, the hysteresis keeps a gap to it.
+// Scaling up additionally requires exceeding the 1p max current.
+func (lp *Loadpoint) phaseScale3pThreshold(minCurrent float64, maxPhases int) float64 {
+	return grid.CurrentToPower(minCurrent, maxPhases) + max(0, lp.GetPhaseSwitching().Hysteresis)
+}
+
+// phaseScale3pDelay returns the scale up delay, defaulting to the pv enable delay
+func (lp *Loadpoint) phaseScale3pDelay() time.Duration {
+	if delay := lp.GetPhaseSwitching().Scale3pDelay; delay > 0 {
+		return delay
+	}
+	return lp.GetEnableDelay()
+}
+
+// phaseScale1pDelay returns the scale down delay, defaulting to the pv disable delay
+func (lp *Loadpoint) phaseScale1pDelay() time.Duration {
+	if delay := lp.GetPhaseSwitching().Scale1pDelay; delay > 0 {
+		return delay
+	}
+	return lp.GetDisableDelay()
 }
 
 // TODO move up to timer functions
@@ -1745,7 +1780,7 @@ func (lp *Loadpoint) boostPower(batteryPower float64) float64 {
 			lp.circuitAllowsPhases(maxPhases, lp.effectiveMinCurrent()) {
 			// max power actually achievable on the active phases
 			activeMaxPower := min(lp.EffectiveMaxPower(), grid.Voltage*lp.effectiveMaxCurrent()*grid.Factor(activePhases))
-			delta += max(0, grid.Voltage*lp.effectiveMinCurrent()*grid.Factor(maxPhases)-activeMaxPower)
+			delta += max(0, lp.phaseScale3pThreshold(lp.effectiveMinCurrent(), maxPhases)-activeMaxPower)
 		}
 	}
 

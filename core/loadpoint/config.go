@@ -42,6 +42,8 @@ type DynamicConfig struct {
 	Thresholds ThresholdsConfig `json:"thresholds"`
 	Soc        SocConfig        `json:"soc"`
 	UI         UIConfig         `json:"ui"`
+
+	PhaseSwitching PhaseSwitchingConfig `json:"phaseSwitching"`
 }
 
 // UIConfig holds display-only settings. Not used in control logic.
@@ -81,6 +83,7 @@ func (payload DynamicConfig) Apply(lp API) error {
 	lp.SetSolarShare(payload.SolarShare)
 
 	lp.SetThresholds(payload.Thresholds)
+	lp.SetPhaseSwitching(payload.PhaseSwitching)
 	lp.SetPlanEnergy(payload.PlanTime, payload.PlanEnergy)
 	lp.SetPlanStrategy(payload.PlanStrategy)
 	lp.SetBatteryBoostLimit(payload.BatteryBoostLimit)
